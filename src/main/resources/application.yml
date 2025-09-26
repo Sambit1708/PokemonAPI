@@ -1,0 +1,27 @@
+server:
+  port: 8080
+
+spring:
+  cache:
+    type: redis
+    redis:
+      time-to-live: 86400000 # 24 hours
+  data:
+    redis:
+      host: localhost
+      port: 6379
+      password:
+  jackson:
+    property-naming-strategy: SNAKE_CASE
+
+pokeapi:
+  base-url: https://pokeapi.co/api/v2
+  sync:
+    enabled: true
+    initial-delay: 5000
+    fixed-delay: 3600000 # 1 hour
+  max-pokemon: 1025 # Up to Gen 9
+
+logging:
+  level:
+    com.pokemon.api: DEBUG
