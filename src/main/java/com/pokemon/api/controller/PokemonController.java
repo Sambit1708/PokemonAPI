@@ -21,7 +21,6 @@ import java.util.List;
 @CrossOrigin(origins = "*") // For frontend development
 public class PokemonController {
 
-    private final PokeApiService pokeApiService;
     private final PokemonCacheService cacheService;
 
     @GetMapping
@@ -36,26 +35,26 @@ public class PokemonController {
     @GetMapping("/{id}")
     public ResponseEntity<Pokemon> getPokemonById(@PathVariable Long id) {
         try {
-            Pokemon pokemon = pokeApiService.getPokemonById(id);
-            return ResponseEntity.ok(pokemon);
+            // Use cache service instead of direct API call
+            List<Pokemon> pokemonList = cacheService.getPokemonBatch((int)(id - 1), 1);
+            if (pokemonList.isEmpty()) {
+                return ResponseEntity.notFound().build();
+            }
+            return ResponseEntity.ok(pokemonList.get(0));
         } catch (Exception e) {
             return ResponseEntity.notFound().build();
         }
     }
 
+
     @GetMapping("/{id}/details")
     public ResponseEntity<Pokemon> getPokemonDetails(@PathVariable Long id) {
-        try {
-            Pokemon pokemon = pokeApiService.getPokemonById(id);
-            return ResponseEntity.ok(pokemon);
-        } catch (Exception e) {
-            return ResponseEntity.notFound().build();
-        }
+        return getPokemonById(id);
     }
 
     @PostMapping("/cache/preload")
     public ResponseEntity<String> triggerCachePreload() {
-        new Thread(() -> cacheService.preloadPokemonCache()).start();
+        new Thread(cacheService::preloadPokemonCache).start();
         return ResponseEntity.accepted().body("Cache preload started");
     }
 }

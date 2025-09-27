@@ -15,22 +15,33 @@ import reactor.core.publisher.Mono;
 
 import java.util.Arrays;
 import java.util.List;
+import java.util.Objects;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.stream.Collectors;
 
 @Slf4j
 @Service
 public class PokeApiService {
 
     private final WebClient webClient;
+    private final ExecutorService executorService;
 
     @Value("${pokeapi.max-pokemon:1025}")
     private int maxPokemon;
 
     public PokeApiService(WebClient.Builder webClientBuilder,
                           @Value("${pokeapi.base-url}") String baseUrl) {
-        this.webClient = webClientBuilder.baseUrl(baseUrl).build();
+        this.webClient = webClientBuilder
+                .baseUrl(baseUrl)
+                .codecs(configurer -> configurer
+                        .defaultCodecs()
+                        .maxInMemorySize(10 * 1024 * 1024)) // Increase buffer size
+                .build();
+        this.executorService = Executors.newFixedThreadPool(10); // For parallel fetching
     }
 
-    @Cacheable(value = "pokemon", key = "#id")
     public Pokemon getPokemonById(Long id) {
         log.info("Fetching Pokémon data from PokeAPI for ID: {}", id);
 
@@ -43,7 +54,6 @@ public class PokeApiService {
         return mapToPokemon(response);
     }
 
-    @Cacheable(value = "pokemonList")
     public List<Pokemon> getAllPokemon() {
         log.info("Fetching all Pokémon data from PokeAPI");
 
@@ -58,29 +68,25 @@ public class PokeApiService {
             return List.of();
         }
 
-        // Fetch detailed information for each Pokémon concurrently
-        List<Mono<Pokemon>> pokemonMonos = listResponse.getResults().stream()
-                .map(pokemonRef -> {
-                    // Extract Pokémon ID from URL (e.g., "https://pokeapi.co/api/v2/pokemon/1/")
-                    String[] urlParts = pokemonRef.getUrl().split("/");
-                    Long pokemonId = Long.parseLong(urlParts[urlParts.length - 1]);
-
-                    return webClient.get()
-                            .uri("/pokemon/{id}", pokemonId)
-                            .retrieve()
-                            .bodyToMono(PokeApiResponse.class)
-                            .map(this::mapToPokemon)
-                            .onErrorResume(e -> {
-                                log.warn("Failed to fetch Pokémon ID {}: {}", pokemonId, e.getMessage());
-                                return Mono.empty(); // Skip failed requests
-                            });
-                })
+        // Fetch detailed information for each Pokémon in parallel
+        List<CompletableFuture<Pokemon>> futures = listResponse.getResults().stream()
+                .map(pokemonRef -> CompletableFuture.supplyAsync(() -> {
+                    try {
+                        String[] urlParts = pokemonRef.getUrl().split("/");
+                        Long pokemonId = Long.parseLong(urlParts[urlParts.length - 1]);
+                        return getPokemonById(pokemonId); // This will use cache if available
+                    } catch (Exception e) {
+                        log.warn("Failed to fetch Pokémon from URL {}: {}", pokemonRef.getUrl(), e.getMessage());
+                        return null;
+                    }
+                }, executorService))
                 .toList();
 
-        // Wait for all requests to complete
-        return Flux.merge(pokemonMonos)
-                .collectList()
-                .block();
+        // Wait for all completions and collect results
+        return futures.stream()
+                .map(CompletableFuture::join)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toList());
     }
 
     private Pokemon mapToPokemon(PokeApiResponse response) {
