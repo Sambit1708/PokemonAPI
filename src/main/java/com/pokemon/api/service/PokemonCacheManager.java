@@ -28,5 +28,5 @@ public class PokemonCacheManager {
         return pokeApiService.getAllPokemon();
     }
 
-    
+
 }
