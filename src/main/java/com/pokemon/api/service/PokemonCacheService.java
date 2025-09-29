@@ -4,6 +4,7 @@ import com.pokemon.api.model.Pokemon;
 import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
@@ -18,13 +19,15 @@ import java.util.stream.LongStream;
 @RequiredArgsConstructor
 public class PokemonCacheService {
 
+    @Value("${pokeapi.sync.enabled}")
+    private boolean isSyncEnabled;
+
     private final PokemonCacheManager pokemonCacheManager;
 
-    @PostConstruct
     @Scheduled(initialDelayString = "${pokeapi.sync.initial-delay:5000}",
             fixedDelayString = "${pokeapi.sync.fixed-delay:3600000}")
     public void preloadPokemonCache() {
-        if (!isCachePreloadingEnabled()) {
+        if (!isSyncEnabled) {
             log.info("Cache preloading disabled");
             return;
         }
@@ -60,9 +63,5 @@ public class PokemonCacheService {
                 })
                 .filter(Objects::nonNull)
                 .collect(Collectors.toList());
-    }
-
-    private boolean isCachePreloadingEnabled() {
-        return true;
     }
 }

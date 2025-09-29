@@ -26,7 +26,7 @@ public class PokemonController {
     @GetMapping
     public ResponseEntity<List<Pokemon>> getAllPokemon(
             @RequestParam(defaultValue = "0") int offset,
-            @RequestParam(defaultValue = "20") int limit) {
+            @RequestParam(defaultValue = "100") int limit) {
 
         List<Pokemon> pokemonBatch = cacheService.getPokemonBatch(offset, limit);
         return ResponseEntity.ok(pokemonBatch);
