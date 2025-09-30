@@ -7,6 +7,10 @@ spring:
     caffeine:     # Optional: Use Caffeine for better performance
       spec: maximumSize=1000,expireAfterWrite=24h
 
+
+cors:
+  allowed-origins: http://localhost:3000
+
 #  data:
 #    redis:
 #      host: localhost
@@ -22,7 +26,3 @@ pokeapi:
     initial-delay: 5000
     fixed-delay: 3600000 # 1 hour
   max-pokemon: 1025 # Up to Gen 9
-
-logging:
-  level:
-    com.pokemon.api: DEBUG

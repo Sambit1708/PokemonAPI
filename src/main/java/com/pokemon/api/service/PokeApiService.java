@@ -1,95 +1,81 @@
 package com.pokemon.api.service;
 
+import com.pokemon.api.dto.TypeResponse;
 import com.pokemon.api.model.Pokemon;
 import com.pokemon.api.model.PokemonSprites;
 import com.pokemon.api.model.PokemonStat;
 import com.pokemon.api.response.PokeApiResponse;
-import lombok.Data;
+import com.pokemon.api.response.PokemonListResponse;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.cache.annotation.Cacheable;
 import org.springframework.stereotype.Service;
-import org.springframework.web.reactive.function.client.WebClient;
-import reactor.core.publisher.Flux;
-import reactor.core.publisher.Mono;
+import org.springframework.web.client.RestTemplate;
 
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.stream.Collectors;
+
+import static com.pokemon.api.util.CommonUtil.capitalizeName;
+import static com.pokemon.api.util.CommonUtil.determineRegion;
 
 @Slf4j
 @Service
 public class PokeApiService {
 
-    private final WebClient webClient;
-    private final ExecutorService executorService;
+    private final RestTemplate restTemplate;
 
-    @Value("${pokeapi.max-pokemon:1025}")
-    private int maxPokemon;
+    @Value("${pokeapi.base-url:https://pokeapi.co/api/v2}")
+    private String baseUrl;
 
-    public PokeApiService(WebClient.Builder webClientBuilder,
-                          @Value("${pokeapi.base-url}") String baseUrl) {
-        this.webClient = webClientBuilder
-                .baseUrl(baseUrl)
-                .codecs(configurer -> configurer
-                        .defaultCodecs()
-                        .maxInMemorySize(10 * 1024 * 1024)) // Increase buffer size
-                .build();
-        this.executorService = Executors.newFixedThreadPool(10); // For parallel fetching
+    public PokeApiService() {
+        this.restTemplate = new RestTemplate();
     }
 
+    @Cacheable(value = "pokemon", key = "#id")
     public Pokemon getPokemonById(Long id) {
-        log.info("Fetching Pokémon data from PokeAPI for ID: {}", id);
+        log.info("Fetching Pokémon from PokeAPI for ID: {}", id);
 
-        PokeApiResponse response = webClient.get()
-                .uri("/pokemon/{id}", id)
-                .retrieve()
-                .bodyToMono(PokeApiResponse.class)
-                .block();
+        String url = baseUrl + "/pokemon/" + id;
+        PokeApiResponse response = restTemplate.getForObject(url, PokeApiResponse.class);
 
         return mapToPokemon(response);
     }
 
+    @Cacheable(value = "allPokemon")
     public List<Pokemon> getAllPokemon() {
-        log.info("Fetching all Pokémon data from PokeAPI");
+        log.info("Fetching all Pokémon from PokeAPI");
 
-        // First, get the list of all Pokémon with basic info
-        PokemonListResponse listResponse = webClient.get()
-                .uri("/pokemon?limit={limit}", maxPokemon)
-                .retrieve()
-                .bodyToMono(PokemonListResponse.class)
-                .block();
+        // First get the list
+        String listUrl = baseUrl + "/pokemon?limit=100";
+        PokemonListResponse listResponse = restTemplate.getForObject(listUrl, PokemonListResponse.class);
 
         if (listResponse == null || listResponse.getResults() == null) {
             return List.of();
         }
 
-        // Fetch detailed information for each Pokémon in parallel
-        List<CompletableFuture<Pokemon>> futures = listResponse.getResults().stream()
-                .map(pokemonRef -> CompletableFuture.supplyAsync(() -> {
+        // Fetch details for first 20 Pokémon (for demo)
+        return listResponse.getResults().stream()
+                .limit(100)
+                .map(pokemonRef -> {
                     try {
                         String[] urlParts = pokemonRef.getUrl().split("/");
                         Long pokemonId = Long.parseLong(urlParts[urlParts.length - 1]);
-                        return getPokemonById(pokemonId); // This will use cache if available
+                        return getPokemonById(pokemonId);
                     } catch (Exception e) {
-                        log.warn("Failed to fetch Pokémon from URL {}: {}", pokemonRef.getUrl(), e.getMessage());
+                        log.warn("Failed to fetch Pokémon: {}", e.getMessage());
                         return null;
                     }
-                }, executorService))
-                .toList();
-
-        // Wait for all completions and collect results
-        return futures.stream()
-                .map(CompletableFuture::join)
+                })
                 .filter(Objects::nonNull)
-                .collect(Collectors.toList());
+                .toList();
     }
 
     private Pokemon mapToPokemon(PokeApiResponse response) {
+        if (response == null) return null;
+
         Pokemon pokemon = new Pokemon();
         pokemon.setId(response.getId());
         pokemon.setName(capitalizeName(response.getName()));
@@ -98,6 +84,7 @@ public class PokeApiService {
                 .toList());
         pokemon.setHeight(response.getHeight());
         pokemon.setWeight(response.getWeight());
+        pokemon.setWeaknesses(findWeaknesses(pokemon.getTypes()));
 
         // Map sprites
         PokemonSprites sprites = new PokemonSprites();
@@ -116,46 +103,39 @@ public class PokeApiService {
                 })
                 .toList());
 
-        // Set region based on Pokémon ID ranges
+        // Set region
         pokemon.setRegion(determineRegion(response.getId()));
-
-        // Calculate weaknesses (simplified for MVP)
-        pokemon.setWeaknesses(calculateWeaknesses(response.getTypes()));
 
         return pokemon;
     }
 
-    private String capitalizeName(String name) {
-        return name.substring(0, 1).toUpperCase() + name.substring(1);
-    }
+    private List<String> findWeaknesses(List<String> types) {
+        Map<String, Double> multiplierMap = new HashMap<>();
 
-    private String determineRegion(Long pokemonId) {
-        if (pokemonId <= 151) return "Kanto";
-        else if (pokemonId <= 251) return "Johto";
-        else if (pokemonId <= 386) return "Hoenn";
-        else if (pokemonId <= 493) return "Sinnoh";
-        else if (pokemonId <= 649) return "Unova";
-        else if (pokemonId <= 721) return "Kalos";
-        else if (pokemonId <= 809) return "Alola";
-        else if (pokemonId <= 905) return "Galar";
-        else return "Paldea";
-    }
+        for (String type : types) {
+            String typeUrl = baseUrl + "/type/" + type;
+            TypeResponse typeResponse = restTemplate.getForObject(typeUrl, TypeResponse.class);
 
-    private List<String> calculateWeaknesses(List<PokeApiResponse.PokemonType> types) {
-        // Simplified weakness calculation - in real app, use type effectiveness matrix
-        return List.of("Normal", "Fighting", "Flying", "Poison", "Ground", "Rock",
-                "Bug", "Ghost", "Steel", "Fire", "Water", "Grass", "Electric",
-                "Psychic", "Ice", "Dragon", "Dark", "Fairy");
-    }
+            if (typeResponse == null || typeResponse.getDamage_relations() == null) continue;
 
-    @Data
-    private static class PokemonListResponse {
-        private List<NamedAPIResource> results;
+            // Double damage → ×2
+            typeResponse.getDamage_relations().getDouble_damage_from()
+                    .forEach(t -> multiplierMap.merge(t.getName(), 2.0, (a, b) -> a * b));
 
-        @Data
-        public static class NamedAPIResource {
-            private String name;
-            private String url;
+            // Half damage → ×0.5
+            typeResponse.getDamage_relations().getHalf_damage_from()
+                    .forEach(t -> multiplierMap.merge(t.getName(), 0.5, (a, b) -> a * b));
+
+            // No damage → ×0
+            typeResponse.getDamage_relations().getNo_damage_from()
+                    .forEach(t -> multiplierMap.put(t.getName(), 0.0));
         }
+
+        // Only keep weaknesses (multiplier > 1)
+        return multiplierMap.entrySet().stream()
+                .filter(entry -> entry.getValue() > 1.0)
+                .map(Map.Entry::getKey)
+                .toList();
     }
+
 }
